@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import ReactFlow, {
   useNodesState,
   useEdgesState,
@@ -31,6 +31,7 @@ import {
   AlertCircle
 } from "lucide-react";
 import Navbar from "./Navbar";
+import FlowyAPI from "./api";
 
 // Agent Konfigürasyon Modal Component
 function AgentConfigModal({ isOpen, onClose, nodeData, onSave }) {
@@ -412,8 +413,124 @@ function StartNode({ data }) {
   );
 }
 
-// Node tipleri tanımları
-const NODE_TYPE_LIST = [
+// Universal Backend Node Component
+function BackendNode({ data, id }) {
+  const [inputs, setInputs] = useState({});
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
+
+  const getNodeIcon = (nodeType) => {
+    switch (nodeType) {
+      case 'provider': return '🏭';
+      case 'processor': return '⚙️';
+      case 'terminator': return '🎯';
+      default: return '📦';
+    }
+  };
+
+  const getNodeColor = (nodeType) => {
+    switch (nodeType) {
+      case 'provider': return 'border-blue-400 bg-blue-100 hover:bg-blue-200';
+      case 'processor': return 'border-purple-400 bg-purple-100 hover:bg-purple-200';
+      case 'terminator': return 'border-red-400 bg-red-100 hover:bg-red-200';
+      default: return 'border-gray-400 bg-gray-100 hover:bg-gray-200';
+    }
+  };
+
+  const handleConfigSave = () => {
+    // Update node data with inputs
+    data.inputs = inputs;
+    setIsConfigOpen(false);
+  };
+
+  return (
+    <>
+      <div 
+        className={`px-4 py-3 rounded-lg border-2 ${getNodeColor(data.category)} cursor-pointer`}
+        onDoubleClick={() => setIsConfigOpen(true)}
+        title={data.description || 'Double click to configure'}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-lg">{getNodeIcon(data.category)}</span>
+          <div>
+            <div className="font-semibold text-sm">{data.name}</div>
+            {data.description && (
+              <div className="text-xs text-gray-600 max-w-32 truncate">
+                {data.description}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Input/Output Handles */}
+        <Handle 
+          type="target" 
+          position={Position.Left} 
+          id="input"
+          className="w-3 h-3 bg-gray-400"
+        />
+        <Handle 
+          type="source" 
+          position={Position.Right} 
+          id="output"
+          className="w-3 h-3 bg-gray-600"
+        />
+      </div>
+
+      {/* Configuration Modal */}
+      {isConfigOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-96 max-h-96 overflow-y-auto">
+            <h3 className="text-lg font-semibold mb-4">Configure {data.name}</h3>
+            
+            {data.inputs && data.inputs.length > 0 ? (
+              <div className="space-y-3">
+                {data.inputs.filter(input => !input.is_connection).map((input) => (
+                  <div key={input.name}>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      {input.name}
+                      {input.required && <span className="text-red-500">*</span>}
+                    </label>
+                    <input
+                      type={input.type === 'number' ? 'number' : 'text'}
+                      value={inputs[input.name] || input.default || ''}
+                      onChange={(e) => setInputs(prev => ({
+                        ...prev,
+                        [input.name]: e.target.value
+                      }))}
+                      placeholder={input.description}
+                      className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">{input.description}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-500">This node has no configurable inputs.</p>
+            )}
+
+            <div className="flex gap-2 mt-6">
+              <button
+                onClick={handleConfigSave}
+                className="flex-1 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setIsConfigOpen(false)}
+                className="flex-1 bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Node tipleri - Backend'den gelecek
+let NODE_TYPE_LIST = [
   {
     id: "1",
     type: "toolAgent",
@@ -435,9 +552,11 @@ const NODE_TYPE_LIST = [
   },
 ];
 
+// Memoized node and edge types to prevent React Flow warnings
 const nodeTypes = {
   toolAgent: ToolAgentNode,
   start: StartNode,
+  backend: BackendNode,
 };
 
 const edgeTypes = {
@@ -475,29 +594,135 @@ function DraggableNode({ nodeType }) {
 
 // Sidebar Component
 function Sidebar() {
-  return (
-    <div className="w-64 bg-gray-50 p-4 border-r border-gray-200">
-      <h3 className="font-bold mb-4 text-gray-700 flex items-center gap-2">
-        <Plus className="w-5 h-5" />
-        Agents
-      </h3>
-      <div className="space-y-3">
-        {NODE_TYPE_LIST.map((nodeType) => (
-          <DraggableNode key={nodeType.id} nodeType={nodeType} />
-        ))}
+  const [backendNodes, setBackendNodes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const loadBackendNodes = async () => {
+      try {
+        setLoading(true);
+        const nodes = await FlowyAPI.getAvailableNodes();
+        console.log('Backend nodes loaded:', nodes);
+        
+        // Backend node'larını frontend formatına çevir
+        const formattedNodes = nodes.map((node, index) => ({
+          id: `backend_${index}`,
+          type: node.name,
+          label: node.name,
+          category: node.node_type,
+          data: {
+            name: node.name,
+            description: node.description,
+            inputs: node.inputs || [],
+            nodeType: node.name
+          }
+        }));
+        
+        setBackendNodes(formattedNodes);
+        setError(null);
+      } catch (err) {
+        console.error('Error loading backend nodes:', err);
+        setError('Backend bağlantısı kurulamadı. Backend\'in çalıştığından emin olun.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadBackendNodes();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="w-64 bg-gray-50 p-4 border-r border-gray-200">
+        <div className="flex items-center justify-center h-32">
+          <div className="text-gray-500">Loading nodes...</div>
+        </div>
       </div>
-      
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="w-64 bg-gray-50 p-4 border-r border-gray-200">
+        <div className="text-red-500 text-sm p-2 bg-red-50 rounded">
+          {error}
+        </div>
+        <div className="mt-4">
+          <h3 className="font-bold mb-4 text-gray-700">Default Nodes:</h3>
+          <div className="space-y-3">
+            {NODE_TYPE_LIST.map((nodeType) => (
+              <DraggableNode key={nodeType.id} nodeType={nodeType} />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Backend node'larını kategorilere göre grupla
+  const categorizedNodes = backendNodes.reduce((acc, node) => {
+    const category = node.category || 'other';
+    if (!acc[category]) acc[category] = [];
+    acc[category].push(node);
+    return acc;
+  }, {});
+
+  return (
+    <div className="w-64 bg-gray-50 p-4 border-r border-gray-200 overflow-y-auto">
+      <div className="mb-4">
+        <div className="flex items-center gap-2 text-green-600 text-sm">
+          <CheckCircle className="w-4 h-4" />
+          Backend Connected ({backendNodes.length} nodes)
+        </div>
+      </div>
+
+      {Object.entries(categorizedNodes).map(([category, nodes]) => (
+        <div key={category} className="mb-6">
+          <h3 className="font-bold mb-3 text-gray-700 flex items-center gap-2 capitalize">
+            <Plus className="w-4 h-4" />
+            {category === 'provider' && '🏭 Providers'}
+            {category === 'processor' && '⚙️ Processors'}
+            {category === 'terminator' && '🎯 Terminators'}
+            {category === 'other' && '📦 Other'}
+          </h3>
+          <div className="space-y-2">
+            {nodes.map((nodeType) => (
+              <DraggableNode key={nodeType.id} nodeType={nodeType} />
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Fallback Default Nodes */}
+      <div className="mt-6 pt-4 border-t border-gray-200">
+        <h3 className="font-bold mb-3 text-gray-700 text-sm">Local Nodes:</h3>
+        <div className="space-y-2">
+          {NODE_TYPE_LIST.map((nodeType) => (
+            <DraggableNode key={nodeType.id} nodeType={nodeType} />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
 
 // Canvas Component
-function FlowCanvas() {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+function FlowCanvas({ nodes, setNodes, edges, setEdges }) {
+  const [, , onNodesChange] = useNodesState(nodes);
+  const [, , onEdgesChange] = useEdgesState(edges);
   const reactFlowWrapper = useRef(null);
   const { screenToFlowPosition } = useReactFlow();
   const [nodeId, setNodeId] = useState(1);
+
+  // Memoize nodeTypes and edgeTypes to prevent React Flow warnings
+  const memoizedNodeTypes = useMemo(() => nodeTypes, []);
+  const memoizedEdgeTypes = useMemo(() => edgeTypes, []);
+  
+  // Update nodes when parent state changes
+  useEffect(() => {
+    // This will be managed by parent component
+  }, [nodes, edges]);
 
   const onConnect = useCallback(
     (params) => {
@@ -526,12 +751,17 @@ function FlowCanvas() {
         y: event.clientY,
       });
 
+      // Backend node'ları için 'backend' tipini kullan
+      const isBackendNode = nodeType.id && nodeType.id.startsWith('backend_');
+      
       const newNode = {
         id: `${nodeType.type}-${nodeId}`,
-        type: nodeType.type,
+        type: isBackendNode ? 'backend' : nodeType.type,
         position,
         data: {
           ...nodeType.data,
+          // Backend node'ları için category bilgisini ekle
+          category: nodeType.category,
         },
       };
 
@@ -555,8 +785,8 @@ function FlowCanvas() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
+          nodeTypes={memoizedNodeTypes}
+          edgeTypes={memoizedEdgeTypes}
           fitView
           className="bg-gray-50"
         >
@@ -572,13 +802,41 @@ function FlowCanvas() {
 
 // Ana App Component
 export default function App() {
+  const [nodes, setNodes] = useState([]);
+  const [edges, setEdges] = useState([]);
+
+  // Chat message handler - workflow execution
+  const handleChatMessage = async (message) => {
+    try {
+      if (nodes.length === 0) {
+        return "Henüz bir workflow oluşturmadınız. Sol panelden node'ları sürükleyerek bir workflow oluşturun.";
+      }
+
+      const workflowData = { nodes, edges };
+      console.log('Executing workflow with:', workflowData);
+      
+      const result = await FlowyAPI.executeWorkflow(workflowData, message);
+      console.log('Workflow result:', result);
+      
+      return result.output?.output || JSON.stringify(result.output) || "Workflow tamamlandı";
+    } catch (error) {
+      console.error('Error executing workflow:', error);
+      throw new Error(`Workflow execution failed: ${error.message}`);
+    }
+  };
+
   return (
     <ReactFlowProvider>
       <div className="w-full h-screen flex flex-col">
-        <Navbar />
+        <Navbar onChatMessage={handleChatMessage} />
         <div className="flex-1 flex">
           <Sidebar />
-          <FlowCanvas />
+          <FlowCanvas 
+            nodes={nodes}
+            setNodes={setNodes}
+            edges={edges}
+            setEdges={setEdges}
+          />
         </div>
       </div>
     </ReactFlowProvider>

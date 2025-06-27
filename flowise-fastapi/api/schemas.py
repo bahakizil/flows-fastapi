@@ -1,30 +1,36 @@
-
 import uuid
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 
-class Node(BaseModel):
+class WorkflowNode(BaseModel):
     id: str
     type: str
     data: Dict[str, Any]
+    position: Dict[str, float]
 
-class Edge(BaseModel):
+class WorkflowEdge(BaseModel):
+    id: str
     source: str
     target: str
-    sourceHandle: Optional[str] = None
-    targetHandle: Optional[str] = None
+    sourceHandle: Optional[str] = "output"
+    targetHandle: Optional[str] = "input"
 
 class Workflow(BaseModel):
-    id: str = Field(default_factory=lambda: f"flow_{uuid.uuid4()}")
-    name: str = "Untitled Flow"
-    nodes: List[Node]
-    edges: List[Edge]
+    id: Optional[str] = None
+    name: str
+    nodes: List[WorkflowNode]
+    edges: List[WorkflowEdge]
 
 class WorkflowExecutionRequest(BaseModel):
     workflow: Workflow
-    input: Dict[str, Any]
-    workflow_id: Optional[str] = None # Stateful oturumlar için
+    input: str = "Hello"
+    session_id: Optional[str] = None
+    stream: bool = False
 
 class WorkflowExecutionResponse(BaseModel):
-    output: Dict[str, Any]
-    workflow_id: str # Client'ın state'i takip edebilmesi için
+    success: bool
+    result: Optional[Any] = None
+    error: Optional[str] = None
+    execution_order: Optional[List[str]] = None
+    session_id: Optional[str] = None
+    execution_time: Optional[float] = None

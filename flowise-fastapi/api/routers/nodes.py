@@ -18,7 +18,15 @@ def list_nodes():
     for node_id, node_class in NODE_TYPE_MAP.items():
         try:
             instance = node_class()
-            node_list.append(instance.metadata.model_dump())
+            node_list.append({
+                "name": getattr(instance, "name", node_id),
+                "label": getattr(instance, "label", node_id),
+                "description": getattr(instance, "description", ""),
+                "category": getattr(instance, "category", "other"),
+                "inputs": [param.dict() for param in getattr(instance, "inputs", [])],
+                "outputs": [output.dict() for output in getattr(instance, "outputs", [])],
+                "node_type": getattr(instance, "type", "provider")
+            })
         except Exception as e:
             print(f"Error getting metadata for {node_id}: {e}")
     

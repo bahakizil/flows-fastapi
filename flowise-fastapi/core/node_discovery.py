@@ -1,4 +1,3 @@
-
 import importlib
 import inspect
 from pathlib import Path
@@ -25,7 +24,7 @@ def discover_nodes():
         module_path = ".".join(parts)
         
         try:
-            module = importlib.import_module(module_path, package="flowise-fastapi")
+            module = importlib.import_module(module_path)
             for name, obj in inspect.getmembers(module, inspect.isclass):
                 if (issubclass(obj, BaseNode) and 
                     obj is not BaseNode and 
@@ -33,7 +32,9 @@ def discover_nodes():
                     # Sınıfın metadata'sından name'i al
                     try:
                         instance = obj()
-                        node_id = instance.metadata.name
+                        node_id = instance.metadata.name if hasattr(instance, 'metadata') else None
+                        if not node_id:
+                            continue
                         NODE_TYPE_MAP[node_id] = obj
                         print(f"Discovered Node: {node_id} -> {obj.__name__}")
                     except Exception as e:
@@ -50,3 +51,9 @@ def get_node_class(node_type: str) -> Type[BaseNode]:
     if not node_class:
         raise ValueError(f"Bilinmeyen node tipi: {node_type}")
     return node_class
+
+def get_registry() -> Dict[str, Type[BaseNode]]:
+    """Returns the node registry (node type map)"""
+    if not NODE_TYPE_MAP:
+        discover_nodes()
+    return NODE_TYPE_MAP.copy()

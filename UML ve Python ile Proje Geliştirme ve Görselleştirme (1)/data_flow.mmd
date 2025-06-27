@@ -1,0 +1,99 @@
+flowchart TD
+    subgraph "Input Layer"
+        USER_INPUT["User Input: Merhaba"]
+        FLOW_CONFIG[Flow Configuration JSON]
+        SESSION_DATA[Session Data]
+    end
+    
+    subgraph "Processing Layer"
+        PARSER[Flow Parser]
+        VALIDATOR[Flow Validator]
+        TOPO_SORT[Topological Sorter]
+        EXECUTOR[Node Executor]
+    end
+    
+    subgraph "Node Execution"
+        subgraph "Node 1: Prompt Template"
+            PT_INPUT["Template: Sen yardımcı bir asistandsın"]
+            PT_PROCESS[Template Formatting]
+            PT_OUTPUT[Formatted Prompt]
+        end
+        
+        subgraph "Node 2: ChatOpenAI"
+            CO_CONFIG[Model Config: gpt-3.5-turbo]
+            CO_PROCESS[LangChain ChatOpenAI Init]
+            CO_OUTPUT[ChatOpenAI Instance]
+        end
+        
+        subgraph "Node 3: LLM Chain"
+            LC_INPUTS[Chain Inputs]
+            LC_PROCESS[Chain Execution]
+            LC_OUTPUT[AI Response]
+        end
+    end
+    
+    subgraph "External Services"
+        OPENAI_API[OpenAI API]
+        MEMORY_STORE[Memory Store]
+        SESSION_STORE[Session Store]
+    end
+    
+    subgraph "Output Layer"
+        RESPONSE[Final Response]
+        MEMORY_UPDATE[Memory Update]
+        SESSION_UPDATE[Session Update]
+    end
+    
+    %% Input flow
+    USER_INPUT --> PARSER
+    FLOW_CONFIG --> PARSER
+    SESSION_DATA --> PARSER
+    
+    %% Processing flow
+    PARSER --> VALIDATOR
+    VALIDATOR --> TOPO_SORT
+    TOPO_SORT --> EXECUTOR
+    
+    %% Node execution flow
+    EXECUTOR --> PT_INPUT
+    PT_INPUT --> PT_PROCESS
+    PT_PROCESS --> PT_OUTPUT
+    
+    EXECUTOR --> CO_CONFIG
+    CO_CONFIG --> CO_PROCESS
+    CO_PROCESS --> CO_OUTPUT
+    
+    PT_OUTPUT --> LC_INPUTS
+    CO_OUTPUT --> LC_INPUTS
+    LC_INPUTS --> LC_PROCESS
+    LC_PROCESS --> OPENAI_API
+    OPENAI_API --> LC_OUTPUT
+    
+    %% Output flow
+    LC_OUTPUT --> RESPONSE
+    LC_OUTPUT --> MEMORY_UPDATE
+    LC_OUTPUT --> SESSION_UPDATE
+    
+    %% Storage updates
+    MEMORY_UPDATE --> MEMORY_STORE
+    SESSION_UPDATE --> SESSION_STORE
+    
+    %% Data transformation annotations
+    USER_INPUT -.->|"Raw Text"| PT_INPUT
+    PT_OUTPUT -.->|"Formatted String"| LC_INPUTS
+    CO_OUTPUT -.->|"LangChain Object"| LC_INPUTS
+    LC_OUTPUT -.->|"AI Generated Text"| RESPONSE
+    
+    %% Styling
+    classDef input fill:#e3f2fd
+    classDef process fill:#e8f5e8
+    classDef node fill:#fff3e0
+    classDef external fill:#ffebee
+    classDef output fill:#f3e5f5
+    
+    class USER_INPUT,FLOW_CONFIG,SESSION_DATA input
+    class PARSER,VALIDATOR,TOPO_SORT,EXECUTOR process
+    class PT_INPUT,PT_PROCESS,PT_OUTPUT,CO_CONFIG,CO_PROCESS,CO_OUTPUT,LC_INPUTS,LC_PROCESS,LC_OUTPUT node
+    class OPENAI_API,MEMORY_STORE,SESSION_STORE external
+    class RESPONSE,MEMORY_UPDATE,SESSION_UPDATE output
+

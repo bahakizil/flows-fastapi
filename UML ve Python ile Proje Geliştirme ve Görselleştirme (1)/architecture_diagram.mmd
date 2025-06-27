@@ -1,0 +1,159 @@
+graph TD
+    subgraph "Client Browser"
+        UI[React Frontend]
+        RF[ReactFlow Canvas]
+        WS_CLIENT[WebSocket Client]
+    end
+    
+    subgraph "Load Balancer"
+        LB[Nginx/HAProxy]
+    end
+    
+    subgraph "Application Server"
+        subgraph "API Gateway"
+            GATEWAY[FastAPI Gateway]
+            CORS[CORS Middleware]
+            AUTH_MW[Auth Middleware]
+        end
+        
+        subgraph "Core Services"
+            FLOW_SVC[Flow Service]
+            NODE_SVC[Node Service]
+            EXEC_SVC[Execution Service]
+            SESSION_SVC[Session Service]
+        end
+        
+        subgraph "Workflow Engine"
+            PARSER[Flow Parser]
+            VALIDATOR[Flow Validator]
+            EXECUTOR[Flow Executor]
+            SCHEDULER[Task Scheduler]
+        end
+        
+        subgraph "Node Registry"
+            NODE_LOADER[Node Loader]
+            NODE_CACHE[Node Cache]
+            TYPE_CHECKER[Type Checker]
+        end
+    end
+    
+    subgraph "Message Queue"
+        REDIS_MQ[Redis Queue]
+        CELERY[Celery Workers]
+    end
+    
+    subgraph "Data Layer"
+        subgraph "Primary Database"
+            POSTGRES[(PostgreSQL)]
+            FLOWS_TABLE[Flows Table]
+            SESSIONS_TABLE[Sessions Table]
+            USERS_TABLE[Users Table]
+        end
+        
+        subgraph "Cache Layer"
+            REDIS[(Redis Cache)]
+            SESSION_CACHE[Session Cache]
+            NODE_CACHE_DB[Node Cache]
+        end
+        
+        subgraph "Vector Database"
+            PINECONE[(Pinecone)]
+            EMBEDDINGS[Embeddings Store]
+        end
+    end
+    
+    subgraph "External APIs"
+        OPENAI_EXT[OpenAI API]
+        ANTHROPIC[Anthropic API]
+        GOOGLE[Google APIs]
+        CUSTOM_API[Custom APIs]
+    end
+    
+    subgraph "Monitoring & Logging"
+        PROMETHEUS[Prometheus]
+        GRAFANA[Grafana]
+        LOGS[Log Aggregator]
+    end
+    
+    %% Client connections
+    UI --> LB
+    RF --> LB
+    WS_CLIENT -.-> LB
+    
+    %% Load balancer
+    LB --> GATEWAY
+    
+    %% API Gateway
+    GATEWAY --> CORS
+    CORS --> AUTH_MW
+    AUTH_MW --> FLOW_SVC
+    AUTH_MW --> NODE_SVC
+    AUTH_MW --> EXEC_SVC
+    AUTH_MW --> SESSION_SVC
+    
+    %% Service connections
+    FLOW_SVC --> PARSER
+    FLOW_SVC --> VALIDATOR
+    EXEC_SVC --> EXECUTOR
+    EXEC_SVC --> SCHEDULER
+    NODE_SVC --> NODE_LOADER
+    NODE_SVC --> NODE_CACHE
+    SESSION_SVC --> SESSION_CACHE
+    
+    %% Workflow engine
+    PARSER --> VALIDATOR
+    VALIDATOR --> EXECUTOR
+    EXECUTOR --> NODE_LOADER
+    EXECUTOR --> TYPE_CHECKER
+    
+    %% Async processing
+    EXECUTOR --> REDIS_MQ
+    REDIS_MQ --> CELERY
+    CELERY --> EXECUTOR
+    
+    %% Database connections
+    FLOW_SVC --> FLOWS_TABLE
+    SESSION_SVC --> SESSIONS_TABLE
+    AUTH_MW --> USERS_TABLE
+    FLOWS_TABLE --> POSTGRES
+    SESSIONS_TABLE --> POSTGRES
+    USERS_TABLE --> POSTGRES
+    
+    %% Cache connections
+    SESSION_SVC --> SESSION_CACHE
+    NODE_SVC --> NODE_CACHE_DB
+    SESSION_CACHE --> REDIS
+    NODE_CACHE_DB --> REDIS
+    
+    %% Vector database
+    EXECUTOR --> EMBEDDINGS
+    EMBEDDINGS --> PINECONE
+    
+    %% External API connections
+    EXECUTOR --> OPENAI_EXT
+    EXECUTOR --> ANTHROPIC
+    EXECUTOR --> GOOGLE
+    EXECUTOR --> CUSTOM_API
+    
+    %% Monitoring
+    GATEWAY --> PROMETHEUS
+    EXECUTOR --> LOGS
+    PROMETHEUS --> GRAFANA
+    
+    %% Styling
+    classDef client fill:#e3f2fd
+    classDef gateway fill:#f3e5f5
+    classDef service fill:#e8f5e8
+    classDef engine fill:#fff3e0
+    classDef data fill:#ffebee
+    classDef external fill:#f1f8e9
+    classDef monitor fill:#fce4ec
+    
+    class UI,RF,WS_CLIENT client
+    class LB,GATEWAY,CORS,AUTH_MW gateway
+    class FLOW_SVC,NODE_SVC,EXEC_SVC,SESSION_SVC service
+    class PARSER,VALIDATOR,EXECUTOR,SCHEDULER,NODE_LOADER,NODE_CACHE,TYPE_CHECKER engine
+    class POSTGRES,REDIS,PINECONE,FLOWS_TABLE,SESSIONS_TABLE,USERS_TABLE,SESSION_CACHE,NODE_CACHE_DB,EMBEDDINGS data
+    class OPENAI_EXT,ANTHROPIC,GOOGLE,CUSTOM_API external
+    class PROMETHEUS,GRAFANA,LOGS,REDIS_MQ,CELERY monitor
+

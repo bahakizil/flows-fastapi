@@ -59,6 +59,8 @@ class ProviderNode(BaseNode):
     Sıfırdan bir LangChain nesnesi (LLM, Tool, Prompt, Memory) oluşturan node'lar için temel sınıf.
     """
     def __init__(self):
+        if not hasattr(self, '_metadatas'):
+            self._metadatas = {}
         if "node_type" not in self._metadatas:
             self._metadatas["node_type"] = NodeType.PROVIDER
 
@@ -72,6 +74,8 @@ class ProcessorNode(BaseNode):
     Birden fazla LangChain nesnesini girdi olarak alıp birleştiren node'lar (örn: Agent).
     """
     def __init__(self):
+        if not hasattr(self, '_metadatas'):
+            self._metadatas = {}
         if "node_type" not in self._metadatas:
             self._metadatas["node_type"] = NodeType.PROCESSOR
     
@@ -89,6 +93,8 @@ class TerminatorNode(BaseNode):
     Genellikle tek bir node'dan girdi alırlar.
     """
     def __init__(self):
+        if not hasattr(self, '_metadatas'):
+            self._metadatas = {}
         if "node_type" not in self._metadatas:
             self._metadatas["node_type"] = NodeType.TERMINATOR
 

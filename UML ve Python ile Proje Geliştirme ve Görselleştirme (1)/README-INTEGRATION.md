@@ -14,7 +14,7 @@ This guide explains how to run the integrated Flowise system with both the React
 ### 1. Start Backend (Terminal 1)
 ```bash
 cd flowise-fastapi
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn main:app --reload          # API on http://localhost:8000
 ```
 
 ### 2. Start Frontend (Terminal 2)
