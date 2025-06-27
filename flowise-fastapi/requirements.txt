@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+langchain
+langgraph
+openai
+langchain-google-genai
+tavily-python
+langchain-community
+langchain-openai
+toposort
+google-search-results
+chromadb
+wikipedia
+pypdf
+python-dotenv
+pydantic

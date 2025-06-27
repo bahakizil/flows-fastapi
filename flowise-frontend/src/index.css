@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* React Flow custom styles */
+.react-flow__node {
+  font-size: 12px;
+}
+
+.react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.react-flow__edge-path {
+  stroke: #b1b1b7;
+  stroke-width: 1;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #555;
+}
+
+.react-flow__node.selected {
+  outline: none;
+}
+
+/* Custom utilities */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
