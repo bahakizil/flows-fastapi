@@ -1,6 +1,5 @@
-
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Union
 from pydantic import BaseModel, Field
 from langchain_core.runnables import Runnable
 from enum import Enum
@@ -21,12 +20,19 @@ class NodeInput(BaseModel):
     is_connection: bool = False 
     default: Any = None
 
+class NodeOutput(BaseModel):
+    """Defines what a node outputs"""
+    name: str
+    type: str
+    description: str
+
 class NodeMetadata(BaseModel):
     name: str
     description: str
+    category: str = "Other"
     node_type: NodeType # Her node türünü belirtmek zorunda.
     inputs: List[NodeInput] = []
-    outputs: List[Dict[str, Any]] = Field(default_factory=list) # Gelecekteki geliştirmeler için
+    outputs: List[NodeOutput] = []  # Now we track outputs too!
 
 # 3. Ana Soyut Sınıf (Tüm node'ların atası)
 class BaseNode(ABC):
@@ -51,6 +57,19 @@ class BaseNode(ABC):
         Gelecekte burada loglama, hata yakalama gibi ortak işlemler yapılabilir.
         """
         return self._execute(*args, **kwargs)
+    
+    def get_output_type(self) -> str:
+        """Return the type of output this node produces"""
+        if hasattr(self, '_metadatas') and 'outputs' in self._metadatas:
+            outputs = self._metadatas['outputs']
+            if outputs and len(outputs) > 0:
+                return outputs[0]['type']
+        return "any"
+    
+    def validate_input(self, input_name: str, input_value: Any) -> bool:
+        """Validate if an input value is acceptable"""
+        # Override in subclasses for custom validation
+        return True
 
 # 4. Geliştiricilerin Kullanacağı 3 Standart Node Sınıfı
 
