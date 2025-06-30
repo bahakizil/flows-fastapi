@@ -1,174 +1,94 @@
-from typing import Dict, Any, List, AsyncGenerator, Optional
-from langchain_core.runnables import Runnable, RunnableConfig
-from api.schemas import Workflow
-from .node_discovery import get_node_class, get_registry
-from nodes.base import ProviderNode, ProcessorNode, TerminatorNode, NodeType
-import json
+from typing import Dict, Any, List, Optional, AsyncGenerator
 import asyncio
+from langchain_core.runnables import Runnable
+from langchain.callbacks.manager import CallbackManager
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+from langchain.callbacks.base import AsyncCallbackHandler
 
-# In-memory cache for compiled and ready-to-run chains
-COMPILED_CHAINS: Dict[str, Runnable] = {}
+from core.dynamic_chain_builder import DynamicChainBuilder
+from core.node_discovery import get_registry
 
-def build_runnable_chain(workflow_def: Workflow) -> Runnable:
-    """
-    Builds an executable LangChain (LCEL) chain from nodes and edges,
-    respecting the new standardized node architecture.
-    """
-    # 1. Simple topological sort implementation
-    def topological_sort(nodes, edges):
-        # Build dependency graph
-        in_degree = {node.id: 0 for node in nodes}
-        adj_list = {node.id: [] for node in nodes}
+class StreamingCallbackHandler(AsyncCallbackHandler):
+    """Custom callback for streaming responses"""
+    def __init__(self, queue: asyncio.Queue):
+        self.queue = queue
         
-        for edge in edges:
-            adj_list[edge.source].append(edge.target)
-            in_degree[edge.target] += 1
-        
-        # Find nodes with no dependencies
-        queue = [node_id for node_id, degree in in_degree.items() if degree == 0]
-        result = []
-        
-        while queue:
-            node_id = queue.pop(0)
-            result.append(node_id)
-            
-            for neighbor in adj_list[node_id]:
-                in_degree[neighbor] -= 1
-                if in_degree[neighbor] == 0:
-                    queue.append(neighbor)
-        
-        return result
+    async def on_llm_new_token(self, token: str, **kwargs):
+        await self.queue.put({
+            "type": "token",
+            "content": token
+        })
     
-    sorted_node_ids = topological_sort(workflow_def.nodes, workflow_def.edges)
-
-    # 2. Initialize all nodes and classify them
-    initialized_nodes: Dict[str, Any] = {}
-    node_instances: Dict[str, Any] = {}
-
-    for node_id in sorted_node_ids:
-        node_def = next(n for n in workflow_def.nodes if n.id == node_id)
-        node_class = get_node_class(node_def.type) # Assuming node_def.type holds the class name
-        node_instances[node_id] = node_class()
-
-    # 3. Execute nodes in order of their type: Providers -> Processors -> Terminators
+    async def on_chain_start(self, serialized: Dict[str, Any], inputs: Dict[str, Any], **kwargs):
+        await self.queue.put({
+            "type": "chain_start",
+            "name": serialized.get("name", "Chain")
+        })
     
-    # First, run all ProviderNodes as they have no dependencies on other nodes
-    for node_id in sorted_node_ids:
-        instance = node_instances[node_id]
-        if isinstance(instance, ProviderNode):
-            node_def = next(n for n in workflow_def.nodes if n.id == node_id)
-            # User-provided inputs for the provider node
-            provider_inputs = node_def.data.get('inputs', {})
-            initialized_nodes[node_id] = instance.execute(**provider_inputs)
-
-    # Next, run ProcessorNodes and TerminatorNodes which depend on other nodes
-    final_runnable = None
-    for node_id in sorted_node_ids:
-        instance = node_instances[node_id]
-        if isinstance(instance, (ProcessorNode, TerminatorNode)):
-            node_def = next(n for n in workflow_def.nodes if n.id == node_id)
-            
-            # Gather connected nodes
-            connected_nodes: Dict[str, Runnable] = {}
-            for edge in workflow_def.edges:
-                if edge.target == node_id:
-                    source_node_id = edge.source
-                    if source_node_id in initialized_nodes:
-                        # targetHandle specifies which parameter of the execute method to connect to
-                        target_handle = edge.targetHandle or "input"
-                        connected_nodes[target_handle] = initialized_nodes[source_node_id]
-            
-            user_inputs = node_def.data.get('inputs', {})
-
-            if isinstance(instance, ProcessorNode):
-                runnable = instance.execute(inputs=user_inputs, connected_nodes=connected_nodes)
-                initialized_nodes[node_id] = runnable
-                final_runnable = runnable # Keep track of the latest runnable
-
-            elif isinstance(instance, TerminatorNode):
-                # Terminator takes the single, final runnable from the previous step
-                if final_runnable:
-                    runnable = instance.execute(previous_node=final_runnable, inputs=user_inputs)
-                    initialized_nodes[node_id] = runnable
-                    final_runnable = runnable
-                else:
-                    raise ValueError(f"TerminatorNode '{node_id}' has no preceding node to terminate.")
-
-    if not final_runnable:
-        # Handle cases where the workflow might only contain a single provider
-        if len(initialized_nodes) == 1:
-            return list(initialized_nodes.values())[0]
-        raise ValueError("Could not create an executable chain from the workflow.")
-
-    return final_runnable
-
-
-async def run_workflow(workflow_def: Workflow, input_text: str, workflow_id: str) -> Dict[str, Any]:
-    """
-    Executes a workflow using the given definition and input.
-    Uses `workflow_id` for stateful memory.
-    """
-    # Ensure workflow_id is not None
-    if not workflow_id:
-        workflow_id = workflow_def.id or "default_workflow"
-    
-    if workflow_id not in COMPILED_CHAINS:
-        print(f"Chain not found in cache. Building new chain for: {workflow_id}")
-        COMPILED_CHAINS[workflow_id] = build_runnable_chain(workflow_def)
-    
-    runnable_chain = COMPILED_CHAINS[workflow_id]
-
-    config = RunnableConfig(metadata={"workflow_id": workflow_def.id or "unknown", "workflow_name": workflow_def.name})
-    
-    input_dict = {"input": input_text}
-
-    result = await runnable_chain.ainvoke(input_dict, config=config)
-    
-    if hasattr(result, 'content'):
-        return {"output": result.content}
-    return result
-
+    async def on_chain_end(self, outputs: Dict[str, Any], **kwargs):
+        await self.queue.put({
+            "type": "chain_end",
+            "outputs": outputs
+        })
 
 class WorkflowRunner:
     """
-    Main class for executing workflows with node-based architecture
+    Executes workflows built by DynamicChainBuilder
     """
     
-    def __init__(self, registry: Optional[Dict[str, Any]] = None):
+    def __init__(self, registry: Dict[str, Any] = None):
         self.registry = registry or get_registry()
+        self.builder = DynamicChainBuilder(self.registry)
     
     async def execute_workflow(
-        self,
-        workflow_data: Dict[str, Any],
+        self, 
+        workflow_data: Dict[str, Any], 
         input_text: str,
         session_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """
-        Execute a workflow with the given input
-        """
+        """Execute a workflow with given input"""
         try:
-            # Convert workflow_data to Workflow object
-            workflow = Workflow(
-                id=workflow_data.get("id", "workflow_" + str(hash(str(workflow_data)))),
-                name=workflow_data.get("name", "Unnamed Workflow"),
-                nodes=workflow_data.get("nodes", []),
-                edges=workflow_data.get("edges", [])
-            )
+            # Build the chain
+            print(f"🔨 Building workflow from {len(workflow_data['nodes'])} nodes...")
+            chain = self.builder.build_from_flow(workflow_data)
             
-            # For now, just return a simple mocked response. TODO: integrate real execution via run_workflow
-            result = {
-                "result": f"Workflow '{workflow.name}' executed with input: {input_text}",
-                "execution_order": [node.id for node in workflow.nodes],
-                "status": "completed"
+            # Prepare input
+            chain_input = self._prepare_chain_input(input_text, session_context)
+            
+            # Execute
+            print(f"🚀 Executing workflow with input: {input_text[:100]}...")
+            
+            if hasattr(chain, 'ainvoke'):
+                result = await chain.ainvoke(chain_input)
+            elif hasattr(chain, 'invoke'):
+                result = await asyncio.to_thread(chain.invoke, chain_input)
+            else:
+                result = str(chain)
+            
+            # Process result
+            if isinstance(result, dict):
+                output = result.get("output", result.get("text", str(result)))
+            else:
+                output = str(result)
+            
+            return {
+                "result": output,
+                "execution_order": list(self.builder.nodes.keys()),
+                "status": "completed",
+                "node_count": len(self.builder.nodes)
             }
             
-            return result
-            
         except Exception as e:
+            import traceback
+            print(f"❌ Workflow execution failed: {str(e)}")
+            print(traceback.format_exc())
+            
             return {
                 "result": None,
                 "error": str(e),
-                "status": "failed"
+                "error_type": type(e).__name__,
+                "status": "failed",
+                "execution_order": list(self.builder.nodes.keys()) if hasattr(self.builder, 'nodes') else []
             }
     
     async def execute_workflow_stream(
@@ -177,76 +97,197 @@ class WorkflowRunner:
         input_text: str,
         session_context: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Execute a workflow with streaming output
-        """
+        """Execute workflow with streaming output"""
         try:
-            # Convert workflow_data to Workflow object
-            workflow = Workflow(
-                id=workflow_data.get("id", "workflow_" + str(hash(str(workflow_data)))),
-                name=workflow_data.get("name", "Unnamed Workflow"),
-                nodes=workflow_data.get("nodes", []),
-                edges=workflow_data.get("edges", [])
-            )
+            # Build the chain
+            yield {"type": "status", "message": "Building workflow..."}
+            chain = self.builder.build_from_flow(workflow_data)
             
-            # Simulate streaming execution
-            yield {"type": "start", "message": f"Starting execution of workflow: {workflow.name}"}
+            # Setup streaming
+            yield {"type": "status", "message": "Initializing stream..."}
             
-            for i, node in enumerate(workflow.nodes):
-                # Simulate node start
-                await asyncio.sleep(0.1)  # Simulate processing time
-                yield {
-                    "type": "node_start",
-                    "node_id": node.id,
-                    "node_type": node.type,
-                    "message": f"Executing node {node.id}"
-                }
-
-                # Simulate node completion
-                await asyncio.sleep(0.2)  # Simulate processing time
-                yield {
-                    "type": "node_complete",
-                    "node_id": node.id,
-                    "result": f"Node {node.id} completed successfully"
-                }
+            chain_input = self._prepare_chain_input(input_text, session_context)
             
-            # Final result
-            yield {
-                "type": "result",
-                "result": f"Workflow completed successfully with input: {input_text}",
-                "execution_order": [node.id for node in workflow.nodes]
+            # Check if chain supports streaming
+            if hasattr(chain, 'astream'):
+                # Stream tokens
+                full_response = ""
+                async for chunk in chain.astream(chain_input):
+                    if isinstance(chunk, dict):
+                        token = chunk.get("output", chunk.get("text", ""))
+                    else:
+                        token = str(chunk)
+                    
+                    full_response += token
+                    yield {"type": "token", "content": token}
+                
+                yield {"type": "result", "result": full_response}
+            else:
+                # Non-streaming execution
+                yield {"type": "status", "message": "Executing (non-streaming)..."}
+                
+                if hasattr(chain, 'ainvoke'):
+                    result = await chain.ainvoke(chain_input)
+                elif hasattr(chain, 'invoke'):
+                    result = await asyncio.to_thread(chain.invoke, chain_input)
+                else:
+                    result = str(chain)
+                
+                yield {"type": "result", "result": result}
+                
+        except Exception as e:
+            yield {"type": "error", "error": str(e), "error_type": type(e).__name__}
+    
+    def _prepare_chain_input(self, input_text: str, session_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Prepare input for chain execution"""
+        chain_input = {"input": input_text}
+        
+        # Add session context if available
+        if session_context:
+            if "messages" in session_context:
+                # Format chat history
+                chat_history = []
+                for msg in session_context["messages"][-10:]:  # Last 10 messages
+                    chat_history.append(f"Human: {msg['human']}")
+                    chat_history.append(f"AI: {msg['ai']}")
+                
+                chain_input["chat_history"] = "\n".join(chat_history)
+            
+            # Add any other context
+            chain_input.update(session_context.get("context", {}))
+        
+        return chain_input
+    
+    def validate_workflow(self, workflow_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate workflow before execution"""
+        try:
+            errors = []
+            warnings = []
+            
+            nodes = workflow_data.get("nodes", [])
+            edges = workflow_data.get("edges", [])
+            
+            # Basic validation
+            if not nodes:
+                errors.append("Workflow must have at least one node")
+                return {"valid": False, "errors": errors}
+            
+            # Node validation
+            node_ids = set()
+            node_types = {}
+            
+            for node in nodes:
+                node_id = node.get("id")
+                node_type = node.get("type")
+                
+                if not node_id:
+                    errors.append("Node missing ID")
+                    continue
+                
+                if node_id in node_ids:
+                    errors.append(f"Duplicate node ID: {node_id}")
+                
+                node_ids.add(node_id)
+                node_types[node_id] = node_type
+                
+                # Check if node type exists
+                if node_type not in self.registry:
+                    errors.append(f"Unknown node type: {node_type}")
+            
+            # Edge validation
+            for edge in edges:
+                source = edge.get("source")
+                target = edge.get("target")
+                
+                if source not in node_ids:
+                    errors.append(f"Edge source '{source}' not found")
+                if target not in node_ids:
+                    errors.append(f"Edge target '{target}' not found")
+                
+                # Type compatibility check
+                if source in node_types and target in node_types:
+                    compatibility = self._check_connection_compatibility(
+                        node_types[source],
+                        edge.get("sourceHandle", "output"),
+                        node_types[target],
+                        edge.get("targetHandle", "input")
+                    )
+                    
+                    if not compatibility["compatible"]:
+                        errors.append(compatibility["error"])
+            
+            # Try to build without executing
+            try:
+                self.builder.build_from_flow(workflow_data)
+            except Exception as e:
+                errors.append(f"Build error: {str(e)}")
+            
+            return {
+                "valid": len(errors) == 0,
+                "errors": errors,
+                "warnings": warnings,
+                "node_count": len(nodes),
+                "edge_count": len(edges)
             }
             
         except Exception as e:
-            yield {"type": "error", "error": str(e)}
-    
-    def validate_workflow(self, workflow_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Validate a workflow definition
-        """
-        try:
-            workflow = Workflow(
-                id=workflow_data.get("id", "temp"),
-                name=workflow_data.get("name", "Temp Workflow"),
-                nodes=workflow_data.get("nodes", []),
-                edges=workflow_data.get("edges", [])
-            )
-            
-            # Basic validation
-            if not workflow.nodes:
-                return {"valid": False, "errors": ["Workflow must have at least one node"]}
-            
-            # Check for orphaned edges
-            node_ids = {node.id for node in workflow.nodes}
-            for edge in workflow.edges:
-                if edge.source not in node_ids:
-                    return {"valid": False, "errors": [f"Edge source '{edge.source}' not found in nodes"]}
-                if edge.target not in node_ids:
-                    return {"valid": False, "errors": [f"Edge target '{edge.target}' not found in nodes"]}
-            
-            return {"valid": True, "message": "Workflow is valid"}
-            
-        except Exception as e:
             return {"valid": False, "errors": [str(e)]}
-
-
+    
+    def _check_connection_compatibility(
+        self, 
+        source_type: str, 
+        source_handle: str,
+        target_type: str, 
+        target_handle: str
+    ) -> Dict[str, Any]:
+        """Check if two nodes can be connected"""
+        # This is a simplified version
+        # In production, you'd check actual input/output types
+        
+        compatibility_rules = {
+            # LLM outputs can connect to agent/chain inputs
+            ("llm", "agent"): ["llm"],
+            ("llm", "chain"): ["llm"],
+            
+            # Tool outputs can connect to agent inputs
+            ("tool", "agent"): ["tools"],
+            
+            # Prompt outputs can connect to LLM/agent inputs
+            ("prompt", "llm"): ["prompt"],
+            ("prompt", "agent"): ["prompt"],
+            
+            # Memory can connect to agents/chains
+            ("memory", "agent"): ["memory"],
+            ("memory", "chain"): ["memory"],
+        }
+        
+        # Get node categories (simplified)
+        source_category = self._get_node_category(source_type)
+        target_category = self._get_node_category(target_type)
+        
+        key = (source_category, target_category)
+        allowed_handles = compatibility_rules.get(key, [])
+        
+        if not allowed_handles or target_handle not in allowed_handles:
+            return {
+                "compatible": True,  # For now, allow all connections
+                "warning": f"Connection from {source_type} to {target_type} might not work as expected"
+            }
+        
+        return {"compatible": True}
+    
+    def _get_node_category(self, node_type: str) -> str:
+        """Get category of a node type"""
+        # Simplified categorization
+        if "llm" in node_type.lower() or "chat" in node_type.lower():
+            return "llm"
+        elif "tool" in node_type.lower():
+            return "tool"
+        elif "prompt" in node_type.lower():
+            return "prompt"
+        elif "memory" in node_type.lower():
+            return "memory"
+        elif "agent" in node_type.lower():
+            return "agent"
+        else:
+            return "other"
