@@ -7,7 +7,7 @@ import asyncio
 from datetime import datetime
 import uuid
 
-from core.simple_runner import WorkflowRunner
+from core.workflow_runner import WorkflowRunner
 from core.node_discovery import get_registry
 from core.config import get_settings
 
